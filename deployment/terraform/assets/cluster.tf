@@ -31,6 +31,8 @@ resource "aws_instance" "app_server" {
     Name = "${var.cluster_name}-app-${count.index}"
   }
 
+iam_instance_profile = "ep_mattermost_profile"
+
   connection {
     # The default username for our AMI
     type = "ssh"
