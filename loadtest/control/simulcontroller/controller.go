@@ -133,10 +133,6 @@ func (c *SimulController) Run() {
 			frequency: 1.5,
 		},
 		{
-			run:       c.createPostReply,
-			frequency: 0.5,
-		},
-		{
 			run:       c.joinChannel,
 			frequency: 0.8,
 		},
@@ -170,7 +166,7 @@ func (c *SimulController) Run() {
 		},
 		{
 			run:       c.createPostReminder,
-			frequency: 0.1,
+			frequency: 0.002,
 		},
 		{
 			run:       editPost,

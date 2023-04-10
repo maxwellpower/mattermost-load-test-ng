@@ -96,7 +96,7 @@ func (c *SimulController) reload(full bool) control.UserActionResponse {
 		return c.switchTeam(c.user)
 	}
 
-	if resp := loadTeam(c.user, team); resp.Err != nil {
+	if resp := loadTeam(c.user, team, c.isGQLEnabled); resp.Err != nil {
 		return resp
 	}
 
@@ -210,13 +210,28 @@ func (c *SimulController) joinTeam(u user.User) control.UserActionResponse {
 	return c.switchTeam(u)
 }
 
-func loadTeam(u user.User, team *model.Team) control.UserActionResponse {
-	if _, err := u.GetChannelsForTeamForUser(team.Id, u.Store().Id(), true); err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
+func loadTeam(u user.User, team *model.Team, gqlEnabled bool) control.UserActionResponse {
+	if gqlEnabled {
+		chCursor := ""
+		cmCursor := ""
+		var err error
+		for {
+			chCursor, cmCursor, err = u.GetChannelsAndChannelMembersGQL(team.Id, true, chCursor, cmCursor)
+			if err != nil {
+				return control.UserActionResponse{Err: control.NewUserError(err)}
+			}
+			if chCursor == "" || cmCursor == "" {
+				break
+			}
+		}
+	} else {
+		if _, err := u.GetChannelsForTeamForUser(team.Id, u.Store().Id(), true); err != nil {
+			return control.UserActionResponse{Err: control.NewUserError(err)}
+		}
 
-	if err := u.GetChannelMembersForUser(u.Store().Id(), team.Id); err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
+		if err := u.GetChannelMembersForUser(u.Store().Id(), team.Id); err != nil {
+			return control.UserActionResponse{Err: control.NewUserError(err)}
+		}
 	}
 
 	collapsedThreads, resp := control.CollapsedThreadsEnabled(u)
@@ -259,7 +274,7 @@ func (c *SimulController) switchTeam(u user.User) control.UserActionResponse {
 
 	c.status <- c.newInfoStatus(fmt.Sprintf("switched to team %s", team.Id))
 
-	if resp := loadTeam(u, &team); resp.Err != nil {
+	if resp := loadTeam(u, &team, c.isGQLEnabled); resp.Err != nil {
 		return resp
 	}
 
@@ -433,7 +448,18 @@ func viewChannel(u user.User, channel *model.Channel) control.UserActionResponse
 		return control.UserActionResponse{Err: control.NewUserError(err)}
 	}
 
-	if err := u.GetChannelStats(channel.Id); err != nil {
+	excludeFileCount := true
+	// 1% of the time, users will open RHS, which will include the file count as well.
+	// This is not an entirely accurate representation of events as we are mixing
+	// a normal viewChannel with a viewRHS event
+	// But we cannot distinguish between the two at an API level, so our action
+	// frequencies are also calculated that way.
+	// This is a good enough approximation.
+	if rand.Float64() < 0.01 {
+		excludeFileCount = false
+	}
+
+	if err := u.GetChannelStats(channel.Id, excludeFileCount); err != nil {
 		return control.UserActionResponse{Err: control.NewUserError(err)}
 	}
 
@@ -687,57 +713,6 @@ func editPost(u user.User) control.UserActionResponse {
 	return control.UserActionResponse{Info: fmt.Sprintf("post edited, id %v", postId)}
 }
 
-func (c *SimulController) createPostReply(u user.User) control.UserActionResponse {
-	channel, err := u.Store().CurrentChannel()
-	if err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
-
-	var rootId string
-	post, err := u.Store().RandomPostForChannel(channel.Id)
-	if errors.Is(err, memstore.ErrPostNotFound) {
-		return control.UserActionResponse{Info: fmt.Sprintf("no posts found in channel %v", channel.Id)}
-	} else if err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
-
-	if post.RootId != "" {
-		rootId = post.RootId
-	} else {
-		rootId = post.Id
-	}
-
-	if err := sendTypingEventIfEnabled(u, channel.Id); err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
-
-	message, err := createMessage(u, channel, true)
-	if err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
-
-	reply := &model.Post{
-		Message:   message,
-		ChannelId: channel.Id,
-		CreateAt:  time.Now().Unix() * 1000,
-		RootId:    rootId,
-	}
-
-	// 2% of the times post will have files attached.
-	if rand.Float64() < 0.02 {
-		if err := c.attachFilesToPost(u, reply); err != nil {
-			return control.UserActionResponse{Err: control.NewUserError(err)}
-		}
-	}
-
-	replyId, err := u.CreatePost(reply)
-	if err != nil {
-		return control.UserActionResponse{Err: control.NewUserError(err)}
-	}
-
-	return control.UserActionResponse{Info: fmt.Sprintf("post reply created, id %v", replyId)}
-}
-
 func (c *SimulController) createPost(u user.User) control.UserActionResponse {
 	channel, err := u.Store().CurrentChannel()
 	if err != nil {
@@ -748,7 +723,12 @@ func (c *SimulController) createPost(u user.User) control.UserActionResponse {
 		return control.UserActionResponse{Err: control.NewUserError(err)}
 	}
 
-	message, err := createMessage(u, channel, false)
+	// Select the post characteristics
+	isReply := rand.Float64() < c.config.PercentReplies
+	isUrgent := !isReply && (rand.Float64() < c.config.PercentUrgentPosts)
+	hasFilesAttached := rand.Float64() < 0.02
+
+	message, err := createMessage(u, channel, isReply)
 	if err != nil {
 		return control.UserActionResponse{Err: control.NewUserError(err)}
 	}
@@ -759,14 +739,33 @@ func (c *SimulController) createPost(u user.User) control.UserActionResponse {
 		CreateAt:  time.Now().Unix() * 1000,
 	}
 
-	// 2% of the times post will have files attached.
-	if rand.Float64() < 0.02 {
+	if isReply {
+		var rootId string
+		randomPost, err := u.Store().RandomPostForChannel(channel.Id)
+		if errors.Is(err, memstore.ErrPostNotFound) {
+			return control.UserActionResponse{Info: fmt.Sprintf("no posts found in channel %v", channel.Id)}
+		} else if err != nil {
+			return control.UserActionResponse{Err: control.NewUserError(err)}
+		}
+
+		// Get the ID of the post to which the randomPost replies to,
+		// or the ID of the randomPost itself if it's a root post
+		if randomPost.RootId != "" {
+			rootId = randomPost.RootId
+		} else {
+			rootId = randomPost.Id
+		}
+
+		post.RootId = rootId
+	}
+
+	if hasFilesAttached {
 		if err := c.attachFilesToPost(u, post); err != nil {
 			return control.UserActionResponse{Err: control.NewUserError(err)}
 		}
 	}
 
-	if rand.Float64() < c.config.PercentUrgentPosts {
+	if isUrgent {
 		post.Metadata = &model.PostMetadata{}
 		post.Metadata.Priority = &model.PostPriority{
 			Priority:                model.NewString("urgent"),
