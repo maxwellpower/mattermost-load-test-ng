@@ -1,4 +1,3 @@
-
 terraform {
   required_providers {
     aws = {
@@ -31,7 +30,7 @@ resource "aws_instance" "app_server" {
     Name = "${var.cluster_name}-app-${count.index}"
   }
 
-iam_instance_profile = "ep_mattermost_profile"
+  iam_instance_profile = "ep_mattermost_profile"
 
   connection {
     # The default username for our AMI
@@ -40,10 +39,10 @@ iam_instance_profile = "ep_mattermost_profile"
     host = self.public_ip
   }
 
-  ami           = var.aws_ami
-  instance_type = var.app_instance_type
-  key_name      = aws_key_pair.key.id
-  count         = var.app_instance_count
+  ami                    = var.aws_ami
+  instance_type          = var.app_instance_type
+  key_name               = aws_key_pair.key.id
+  count                  = var.app_instance_count
   vpc_security_group_ids = [
     aws_security_group.app[0].id,
     aws_security_group.app_gossip[0].id
@@ -138,7 +137,7 @@ resource "aws_instance" "proxy_server" {
   instance_type               = var.proxy_instance_type
   count                       = var.app_instance_count > 1 ? 1 : 0
   associate_public_ip_address = true
-  vpc_security_group_ids = [
+  vpc_security_group_ids      = [
     aws_security_group.proxy[0].id
   ]
   key_name = aws_key_pair.key.id
@@ -243,7 +242,7 @@ resource "aws_iam_access_key" "s3key" {
 resource "aws_s3_bucket" "s3bucket" {
   bucket = "${var.cluster_name}.s3bucket"
   count  = 0
-  tags = {
+  tags   = {
     Name = "${var.cluster_name}-s3bucket"
   }
 
@@ -383,9 +382,9 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
   ingress {
-    from_port = 8067
-    to_port   = 8067
-    protocol  = "tcp"
+    from_port   = 8067
+    to_port     = 8067
+    protocol    = "tcp"
     # Maybe restrict only from Prometheus server ?
     # But handy while taking profiles without manually ssh-ing into the server.
     cidr_blocks = ["0.0.0.0/0"]
@@ -631,10 +630,10 @@ resource "aws_instance" "job_server" {
     host = self.public_ip
   }
 
-  ami           = var.aws_ami
-  instance_type = var.job_server_instance_type
-  key_name      = aws_key_pair.key.id
-  count         = var.job_server_instance_count
+  ami                    = var.aws_ami
+  instance_type          = var.job_server_instance_type
+  key_name               = aws_key_pair.key.id
+  count                  = var.job_server_instance_count
   vpc_security_group_ids = [
     aws_security_group.app[0].id,
   ]
