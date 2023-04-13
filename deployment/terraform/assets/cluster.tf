@@ -30,7 +30,7 @@ resource "aws_instance" "app_server" {
     Name = "${var.cluster_name}-app-${count.index}"
   }
 
-  iam_instance_profile = "ep_mattermost_profile"
+  iam_instance_profile = "ep-loadtest-s3-role"
 
   connection {
     # The default username for our AMI
